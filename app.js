@@ -1,265 +1,63 @@
-import * as THREE from "https://esm.sh/three@0.181.0";
-import * as OBC from "https://esm.sh/@thatopen/components@3.4.9?deps=three@0.181.0";
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 
-const MODEL_URL = "./modelo.ifc";
-const CACHE_DB = "3delta-bim-cache-v1";
-const CACHE_STORE = "models";
-const MODEL_ID = "H741-LEAO";
-
-const viewer = document.getElementById("viewer");
-const loader = document.getElementById("loader");
-const progressBar = document.getElementById("progress-bar");
-const progressText = document.getElementById("progress-text");
-const errorBox = document.getElementById("error-box");
-const statusDot = document.getElementById("status-dot");
-const statusText = document.getElementById("status-text");
-const modelMeta = document.getElementById("model-meta");
-const hint = document.getElementById("hint");
-
-let modelSphere = null;
-let world = null;
-let fragments = null;
-
-function setStatus(kind, text) {
-  statusDot.className = `dot ${kind}`;
-  statusText.textContent = text;
+const container=document.getElementById('view');
+const status=document.getElementById('status'),cover=document.getElementById('cover');
+const loadingText=document.getElementById('loadingText'),progress=document.getElementById('progressInner');
+const panel=document.getElementById('panel'),cut=document.getElementById('cut'),axis=document.getElementById('axis');
+const invert=document.getElementById('invert'), selected=document.getElementById('selected');
+const scene=new THREE.Scene();scene.background=new THREE.Color(0xe9ecee);
+const camera=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,0.01,1e9);
+const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));renderer.setSize(innerWidth,innerHeight);
+renderer.localClippingEnabled=true;container.append(renderer.domElement);
+scene.add(new THREE.HemisphereLight(0xffffff,0x555555,2.5));
+const light=new THREE.DirectionalLight(0xffffff,2);light.position.set(15,35,24);scene.add(light);
+const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.screenSpacePanning=true;
+let model=null,box=null,center=new THREE.Vector3(),radius=10,cutting=false,measuring=false,first=null;
+let meshes=[],materialClones=[],measureObjects=[];
+const ray=new THREE.Raycaster(),pointer=new THREE.Vector2();
+const plane=new THREE.Plane(new THREE.Vector3(1,0,0),0);
+function fit(){if(!box)return;const size=box.getSize(new THREE.Vector3());center=box.getCenter(new THREE.Vector3());radius=Math.max(size.length()/2,1);camera.position.copy(center).add(new THREE.Vector3(radius*1.7,radius*1.2,radius*1.7));camera.near=Math.max(radius/10000,.01);camera.far=radius*100;camera.updateProjectionMatrix();controls.target.copy(center);controls.update();}
+function pick(e){const rect=renderer.domElement.getBoundingClientRect();pointer.set(((e.clientX-rect.left)/rect.width)*2-1,-((e.clientY-rect.top)/rect.height)*2+1);ray.setFromCamera(pointer,camera);return ray.intersectObjects(meshes,false)[0];}
+function updatePlane(){if(!box)return;const ax=axis.value;const min=box.min[ax],max=box.max[ax],at=min+(max-min)*(Number(cut.value)/100);const n=new THREE.Vector3(ax==='x'?1:0,ax==='y'?1:0,ax==='z'?1:0).multiplyScalar(invert.checked?-1:1);plane.normal.copy(n);plane.constant=-at*(invert.checked?-1:1);for(const m of meshes)for(const mat of Array.isArray(m.material)?m.material:[m.material])mat.clippingPlanes=cutting?[plane]:[];}
+function clearMeasures(){for(const v of measureObjects){scene.remove(v);if(v.geometry)v.geometry.dispose();if(v.material)v.material.dispose();}measureObjects=[];first=null;}
+function addMarker(pt){const s=new THREE.Mesh(new THREE.SphereGeometry(Math.max(radius*.003,.01),8,8),new THREE.MeshBasicMaterial({color:0xff6a00}));s.position.copy(pt);scene.add(s);measureObjects.push(s);}
+renderer.domElement.addEventListener('click',e=>{const hit=pick(e);if(!hit)return;
+if(measuring){addMarker(hit.point);if(first){const len=first.distanceTo(hit.point);const geom=new THREE.BufferGeometry().setFromPoints([first,hit.point]);const line=new THREE.Line(geom,new THREE.LineBasicMaterial({color:0xff6a00,depthTest:false}));line.renderOrder=999;scene.add(line);measureObjects.push(line);selected.textContent=`Distância: ${len.toFixed(3)} m (se o GLB estiver em metros)`;selected.style.display='block';first=null;}else first=hit.point.clone();return;}
+let obj=hit.object;let name='';while(obj&&obj!==model){if(obj.name&&!name)name=obj.name;const info=obj.userData||{};if(info.Name||info.name||info.Tag||info.tag){name=[info.Name||info.name,info.Tag||info.tag].filter(Boolean).join(' | ');break;}obj=obj.parent;}selected.textContent=`Elemento: ${name||hit.object.name||'Sem identificação'}`;selected.style.display='block';});
+function toggled(id,state){document.getElementById(id).classList.toggle('active',state)}
+document.getElementById('fit').onclick=fit;
+document.getElementById('topview').onclick=()=>{camera.position.copy(center).add(new THREE.Vector3(0,radius*3,.001));controls.target.copy(center);controls.update()};
+document.getElementById('frontview').onclick=()=>{camera.position.copy(center).add(new THREE.Vector3(0,radius*.2,radius*3));controls.target.copy(center);controls.update()};
+document.getElementById('cutBtn').onclick=()=>{cutting=!cutting;panel.style.display=cutting?'block':'none';toggled('cutBtn',cutting);updatePlane()};
+document.getElementById('disableCut').onclick=()=>{cutting=false;panel.style.display='none';toggled('cutBtn',false);updatePlane()};
+document.getElementById('measure').onclick=()=>{measuring=!measuring;toggled('measure',measuring);selected.textContent=measuring?'Toque em dois pontos para medir.':'Modo medição desativado.';selected.style.display='block';first=null;};
+document.getElementById('clear').onclick=()=>{clearMeasures();selected.style.display='none'};
+[cut,axis,invert].forEach(el=>el.addEventListener('input',updatePlane));
+addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight)});
+function animate(){requestAnimationFrame(animate);controls.update();renderer.render(scene,camera)}animate();
+async function loadModel(){
+try{
+// Alterar versao.json (número da revisão) a cada publicação impede cache antigo.
+const manifest=await fetch('./versao.json?check='+Date.now(),{cache:'no-store'}).then(r=>{if(!r.ok)throw Error('versao.json não encontrado');return r.json()});
+const n=manifest.parts||9;const buffers=[];let total=0;
+for(let i=1;i<=n;i++){
+const part=`modelo.part${String(i).padStart(2,'0')}`;
+loadingText.textContent=`Baixando parte ${i} de ${n}...`;
+const response=await fetch('./'+part+'?v='+encodeURIComponent(manifest.version),{cache:'default'});
+if(!response.ok)throw Error(`Arquivo ${part} não encontrado (HTTP ${response.status}).`);
+const bytes=new Uint8Array(await response.arrayBuffer());buffers.push(bytes);total+=bytes.byteLength;progress.style.width=`${Math.round(i/n*75)}%`;
 }
-
-function setProgress(value, label) {
-  const pct = Math.max(4, Math.min(100, Math.round(value)));
-  progressBar.style.width = `${pct}%`;
-  progressText.textContent = label || `${pct}%`;
-}
-
-function extractRevision(bytes) {
-  try {
-    const sample = bytes.slice(0, Math.min(bytes.length, 2_000_000));
-    const text = new TextDecoder("latin1").decode(sample);
-    const name = text.match(/IFCBUILDING\([^;]{0,2000}?'([^']+)'/i)?.[1] || "";
-    const rev = (name.match(/(?:^|[-_])(R\d{2,3})(?:[-_]|$)/i) || text.match(/(?:^|[-_])(R\d{2,3})(?:[-_]|$)/im))?.[1]?.toUpperCase();
-    return { name, rev };
-  } catch {
-    return { name: "", rev: "" };
-  }
-}
-
-function fitModel(animate = true) {
-  if (!world?.camera?.controls || !modelSphere) return;
-  world.camera.controls.fitToSphere(modelSphere, animate);
-}
-
-async function setView(direction) {
-  if (!world?.camera?.controls || !modelSphere) return;
-  const c = modelSphere.center;
-  const r = Math.max(modelSphere.radius, 1);
-  let p;
-  if (direction === "top") p = new THREE.Vector3(c.x, c.y + r * 2.8, c.z);
-  else if (direction === "front") p = new THREE.Vector3(c.x, c.y + r * 0.25, c.z + r * 2.8);
-  else p = new THREE.Vector3(c.x + r * 1.7, c.y + r * 1.25, c.z + r * 1.7);
-  await world.camera.controls.setLookAt(p.x, p.y, p.z, c.x, c.y, c.z, true);
-}
-
-function openDb() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(CACHE_DB, 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(CACHE_STORE)) db.createObjectStore(CACHE_STORE);
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function cacheGet(key) {
-  try {
-    const db = await openDb();
-    return await new Promise((resolve, reject) => {
-      const tx = db.transaction(CACHE_STORE, "readonly");
-      const req = tx.objectStore(CACHE_STORE).get(key);
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => reject(req.error);
-    });
-  } catch {
-    return null;
-  }
-}
-
-async function cachePut(key, value) {
-  try {
-    const db = await openDb();
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(CACHE_STORE, "readwrite");
-      const store = tx.objectStore(CACHE_STORE);
-      // Mantém apenas a versão atual do modelo neste navegador.
-      store.clear();
-      store.put(value, key);
-      tx.oncomplete = resolve;
-      tx.onerror = () => reject(tx.error);
-    });
-  } catch (e) {
-    console.warn("Cache local indisponível", e);
-  }
-}
-
-async function getServerVersion() {
-  try {
-    // "no-cache" permite revalidação (304) sem forçar download do IFC toda vez.
-    const r = await fetch(MODEL_URL, { method: "HEAD", cache: "no-cache" });
-    if (!r.ok) return null;
-    const etag = r.headers.get("etag") || "";
-    const modified = r.headers.get("last-modified") || "";
-    const length = r.headers.get("content-length") || "";
-    return `${etag}|${modified}|${length}` || null;
-  } catch {
-    return null;
-  }
-}
-
-async function prepareModel(model) {
-  fragments.core.update(true);
-  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  const box = new THREE.Box3().setFromObject(model.object);
-  if (!box.isEmpty()) {
-    modelSphere = new THREE.Sphere();
-    box.getBoundingSphere(modelSphere);
-    if (Number.isFinite(modelSphere.radius) && modelSphere.radius > 0) {
-      await setView("iso");
-      fitModel(false);
-    }
-  }
-}
-
-async function boot() {
-  try {
-    setStatus("busy", "Carregando");
-    setProgress(5, "Preparando visualizador…");
-
-    const components = new OBC.Components();
-    const worlds = components.get(OBC.Worlds);
-    world = worlds.create();
-    world.scene = new OBC.SimpleScene(components);
-    world.scene.setup();
-    world.scene.three.background = new THREE.Color(0xf4f3f1);
-    world.renderer = new OBC.SimpleRenderer(components, viewer);
-    world.camera = new OBC.OrthoPerspectiveCamera(components);
-    components.init();
-    components.get(OBC.Grids).create(world);
-
-    const workerUrl = await OBC.FragmentsManager.getWorker();
-    fragments = components.get(OBC.FragmentsManager);
-    fragments.init(workerUrl);
-    world.camera.controls.addEventListener("update", () => fragments.core.update());
-    world.onCameraChanged.add((camera) => {
-      for (const [, m] of fragments.list) m.useCamera(camera.three);
-      fragments.core.update(true);
-    });
-    fragments.list.onItemSet.add(({ value: m }) => {
-      m.useCamera(world.camera.three);
-      world.scene.three.add(m.object);
-      fragments.core.update(true);
-    });
-
-    // Primeiro tenta o modelo já convertido e salvo no próprio celular/computador.
-    setProgress(10, "Verificando versão do modelo…");
-    const serverVersion = await getServerVersion();
-    const cacheKey = serverVersion ? `${MODEL_URL}|${serverVersion}` : null;
-    const cached = cacheKey ? await cacheGet(cacheKey) : null;
-
-    if (cached?.fragments) {
-      setProgress(28, "Abrindo modelo otimizado…");
-      const model = await fragments.core.load(cached.fragments, { modelId: MODEL_ID });
-      modelMeta.textContent = cached.metaText || "Estrutura • IFC";
-      await prepareModel(model);
-      setProgress(100, "Modelo pronto");
-      setStatus("ok", "Modelo atualizado");
-      setTimeout(() => loader.classList.add("hidden"), 180);
-      setTimeout(() => hint.classList.add("hide"), 7000);
-      return;
-    }
-
-    const ifcLoader = components.get(OBC.IfcLoader);
-    await ifcLoader.setup({
-      autoSetWasm: false,
-      wasm: { path: "https://unpkg.com/web-ifc@0.0.77/", absolute: true },
-    });
-
-    setProgress(14, "Primeiro acesso: baixando IFC…");
-    // Sem timestamp na URL: o navegador pode reaproveitar/validar o arquivo.
-    const response = await fetch(MODEL_URL, { cache: "no-cache" });
-    if (!response.ok) throw new Error(`Não foi possível baixar o IFC (HTTP ${response.status}).`);
-    const total = Number(response.headers.get("content-length")) || 0;
-    let bytes;
-
-    if (response.body && total) {
-      const reader = response.body.getReader();
-      const chunks = [];
-      let received = 0;
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-        received += value.length;
-        const downloadPct = 14 + (received / total) * 26;
-        setProgress(downloadPct, `Baixando IFC… ${Math.round((received / total) * 100)}%`);
-      }
-      const merged = new Uint8Array(received);
-      let offset = 0;
-      for (const chunk of chunks) { merged.set(chunk, offset); offset += chunk.length; }
-      bytes = merged;
-    } else {
-      bytes = new Uint8Array(await response.arrayBuffer());
-      setProgress(40, "IFC baixado. Processando geometria…");
-    }
-
-    const meta = extractRevision(bytes);
-    const metaText = meta.rev ? `Estrutura • ${meta.rev} • IFC` : "Estrutura • IFC";
-    modelMeta.textContent = metaText;
-
-    setProgress(43, "Primeiro acesso: processando BIM…");
-    const model = await ifcLoader.load(bytes, false, MODEL_ID, {
-      processData: {
-        progressCallback: (p) => {
-          const normalized = p > 1 ? p / 100 : p;
-          const pct = 43 + Math.max(0, Math.min(1, normalized)) * 46;
-          setProgress(pct, `Processando geometria… ${Math.round(normalized * 100)}%`);
-        },
-      },
-    });
-
-    await prepareModel(model);
-
-    // Salva a conversão em Fragments no dispositivo. Próximas aberturas pulam
-    // o parsing pesado do IFC, desde que a versão do arquivo não tenha mudado.
-    if (cacheKey) {
-      setProgress(92, "Otimizando próximos acessos…");
-      try {
-        const fragBytes = await model.getBuffer(false);
-        const fragBuffer = fragBytes instanceof ArrayBuffer
-          ? fragBytes
-          : fragBytes.buffer.slice(fragBytes.byteOffset, fragBytes.byteOffset + fragBytes.byteLength);
-        await cachePut(cacheKey, { fragments: fragBuffer, metaText, savedAt: Date.now() });
-      } catch (e) {
-        console.warn("Não foi possível salvar cache de fragments", e);
-      }
-    }
-
-    setProgress(100, "Modelo pronto");
-    setStatus("ok", "Modelo atualizado");
-    setTimeout(() => loader.classList.add("hidden"), 220);
-    setTimeout(() => hint.classList.add("hide"), 7000);
-  } catch (error) {
-    console.error(error);
-    setStatus("error", "Erro");
-    errorBox.textContent = `Erro ao abrir o modelo: ${error?.message || error}. Verifique a conexão e tente novamente.`;
-    errorBox.classList.add("show");
-    progressText.textContent = "Não foi possível carregar o IFC.";
-  }
-}
-
-document.getElementById("btn-fit").addEventListener("click", () => fitModel(true));
-document.getElementById("btn-iso").addEventListener("click", () => setView("iso"));
-document.getElementById("btn-top").addEventListener("click", () => setView("top"));
-document.getElementById("btn-front").addEventListener("click", () => setView("front"));
-
-boot();
+loadingText.textContent='Preparando geometria 3D...';
+const combined=new Uint8Array(total);let offset=0;for(const b of buffers){combined.set(b,offset);offset+=b.length;}buffers.length=0;
+const parsed=await new GLTFLoader().parseAsync(combined.buffer,'');
+model=parsed.scene;scene.add(model);
+model.traverse(obj=>{if(!obj.isMesh)return;meshes.push(obj);const original=Array.isArray(obj.material)?obj.material:[obj.material];obj.material=Array.isArray(obj.material)?original.map(m=>m.clone()):obj.material.clone();const materials=Array.isArray(obj.material)?obj.material:[obj.material];for(const m of materials){m.side=THREE.DoubleSide;materialClones.push(m);}});
+box=new THREE.Box3().setFromObject(model);fit();
+status.textContent=`${manifest.version||'Modelo atual'} · ${meshes.length.toLocaleString('pt-BR')} malhas`;
+document.getElementById('rev').textContent='Estrutura · '+(manifest.version||'Revisão não informada');
+progress.style.width='100%';cover.style.display='none';
+}catch(err){document.getElementById('error').textContent='Falha ao carregar modelo: '+err.message;loadingText.textContent='Verifique os arquivos publicados no GitHub.';status.textContent='Erro';console.error(err);}}
+loadModel();
